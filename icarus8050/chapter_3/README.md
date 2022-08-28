@@ -97,3 +97,32 @@
 * 프로듀서 내부에서는 send() 메서드 동작 이후 레코드들을 파티션별로 잠시 모아둔다.
   * 배치 전송을 하기 위함이다.
 * 전송이 실패하면 재시도 동작이 이뤄지고, 지정된 횟수만큼의 재시도가 실패하면 최종 실패를 전달하고, 전송이 성공하면 메타데이터를 리턴한다.
+
+### 프로듀서 예제
+* 프로듀서의 전송 방법은 세 가지 방식으로 나눌 수 있다.
+  * 메시지를 보내고 확인하지 않기
+  * 동기 전송
+  * 비동기 전송
+```java
+// Fire and forget
+public class Exam_3_1 {
+    public static void main(String[] args) {
+        Properties props = new Properties();
+        props.put(BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
+        props.put(KEY_SERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.StringSerializer");
+        props.put(VALUE_SERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.StringSerializer");
+
+        //Properties 오브젝트를 전달해 새 프로듀서를 생성.
+
+        try (Producer<String, String> producer = new KafkaProducer<>(props)) {
+            for (int i = 0; i < 10; i++) {
+                ProducerRecord<String, String> record = new ProducerRecord<>("peter-basic-01", "Apache Kafka is a distributed streaming platform - " + i);
+                producer.send(record); //send()메소드를 사용하여 메시지를 전송 후 Java Future Ojbect로 RecordMetadata를 리턴 받지만, 리턴값을 무시하므로 메시지가 성공적으로 전송되었는지 알 수 없음.
+            }
+        } catch (Exception e) {
+            e.printStackTrace(); //카프카 브로커에게 메시지를 전송한 후의 에러는 무시하지만, 전송 전 에러가 발생하면 예외를 처리할 수 있음.
+        }
+    }
+}
+```
+* 위 예제는 producer.send() 메서드가 리턴하는 Future Object를 무시하기 때문에 메시지를 전송하고 난 후 성공적으로 도착했는지 확인하지 않는다.
