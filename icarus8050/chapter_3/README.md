@@ -126,3 +126,78 @@ public class Exam_3_1 {
 }
 ```
 * 위 예제는 producer.send() 메서드가 리턴하는 Future Object를 무시하기 때문에 메시지를 전송하고 난 후 성공적으로 도착했는지 확인하지 않는다.
+
+```java
+// Sync
+public class Exam_3_2 {
+  public static void main(String[] args) {
+    Properties props = new Properties(); //Properties 오브젝트를 시작.
+    props.put(BOOTSTRAP_SERVERS_CONFIG, "localhost:9092"); //브로커 리스트를 정의.
+    props.put(KEY_SERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.StringSerializer");
+    props.put(VALUE_SERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.StringSerializer");
+
+    try (Producer<String, String> producer = new KafkaProducer<>(props)) {
+      for (int i = 0; i < 3; i++) {
+        ProducerRecord<String, String> record = new ProducerRecord<>("peter-basic01", "Apache Kafka is a distributed streaming platform - " + i); //ProducerRecord 오브젝트를 생성.
+        RecordMetadata metadata = producer.send(record).get(); //get() 메소드를 이용해 카프카의 응답을 기다립니다. 메시지가 성공적으로 전송되지 않으면 예외가 발생하고, 에러가 없다면 RecordMetadata를 얻음.
+        System.out.printf("Topic: %s, Partition: %d, Offset: %d, Key: %s, Received Message: %s\n", metadata.topic(), metadata.partition()
+                , metadata.offset(), record.key(), record.value());
+      }
+    } catch (Exception e) {
+      e.printStackTrace(); //카프카로 메시지를 보내기 전과 보내는 동안 에러가 발생하면 예외가 발생함.
+    }
+  }
+}
+```
+* 위 코드는 send() 메서드 호출 후에 Future 객체의 get() 메서드를 호출하여 동기식으로 메시지를 전송하도록 되어있다.
+* ProducerRecord 전송이 성공한 후에 리턴되는 RecordMetadata에서 파티션과 오프셋 정보를 확인할 수 있고, 메시지 전달의 성공 여부를 파악할 수 있다.
+* 이와 같은 동기 전송 방식은 신뢰성 있는 메시지 전달을 할 수 있도록 한다.
+
+```java
+public class Exam_3_3 {
+    public class PeterProducerCallback implements Callback { //콜백을 사용하기 위해 org.apache.kafka.clients.producer.Callback를 구현하는 클래스가 필요함.
+        private ProducerRecord<String, String> record;
+
+        public PeterProducerCallback(ProducerRecord<String, String> record) {
+            this.record = record;
+        }
+
+        @Override
+        public void onCompletion(RecordMetadata metadata, Exception e) {
+            if (e != null) {
+                e.printStackTrace(); //카프카가 오류를 리턴하면 onCompletion()은 예외를 갖게 되며, 실제 운영환경에서는 추가적인 예외처리가 필요함.
+            } else {
+                System.out.printf("Topic: %s, Partition: %d, Offset: %d, Key: %s, Received Message: %s\n", metadata.topic(), metadata.partition()
+                        , metadata.offset(), record.key(), record.value());
+            }
+        }
+    }
+}
+```
+* 콜백을 사용하기 위해서는 org.apache.kafka.clients.producer.Callback을 구현하는 클래스가 필요하다.
+* 카프카가 오류를 리턴하면 onCompletion()은 예외를 갖게 된다.
+
+```java
+public class Exam_3_4 {
+    public static void main(String[] args) {
+        Properties props = new Properties(); //Properties 오브젝트를 시작합니다.
+        props.put(BOOTSTRAP_SERVERS_CONFIG, "localhost:9092"); //브로커 리스트를 정의.
+        props.put(KEY_SERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.StringSerializer");
+        props.put(VALUE_SERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.StringSerializer");
+
+        //Properties 오브젝트를 전달해 새 프로듀서를 생성.
+
+        try (Producer<String, String> producer = new KafkaProducer<>(props)) {
+            for (int i = 0; i < 3; i++) {
+                ProducerRecord<String, String> record = new ProducerRecord<>("peter-basic-01", "Apache Kafka is a distributed streaming platform - " + i); //ProducerRecord 오브젝트를 생성.
+                producer.send(record, new PeterProducerCallback(record)); //프로듀서에서 레코드를 보낼 때 콜백 오브젝트를 같이 보냄.
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+}
+```
+* 위 예제는 비동기 전송 예제다.
+* 프로듀서는 send() 메서드의 콜백을 함께 전달한다.
+* 비동기/콜백 전송 방법은 빠른 전송이 가능하고, 메시지 전송이 실패한 경우라도 예외를 처리할 수 있다.
