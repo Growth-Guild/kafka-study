@@ -154,30 +154,29 @@ public class Exam_3_2 {
 * 이와 같은 동기 전송 방식은 신뢰성 있는 메시지 전달을 할 수 있도록 한다.
 
 ```java
-public class Exam_3_3 {
-    public class PeterProducerCallback implements Callback { //콜백을 사용하기 위해 org.apache.kafka.clients.producer.Callback를 구현하는 클래스가 필요함.
-        private ProducerRecord<String, String> record;
+public class PeterProducerCallback implements Callback { //콜백을 사용하기 위해 org.apache.kafka.clients.producer.Callback를 구현하는 클래스가 필요함.
+  private ProducerRecord<String, String> record;
 
-        public PeterProducerCallback(ProducerRecord<String, String> record) {
-            this.record = record;
-        }
+  public PeterProducerCallback(ProducerRecord<String, String> record) {
+    this.record = record;
+  }
 
-        @Override
-        public void onCompletion(RecordMetadata metadata, Exception e) {
-            if (e != null) {
-                e.printStackTrace(); //카프카가 오류를 리턴하면 onCompletion()은 예외를 갖게 되며, 실제 운영환경에서는 추가적인 예외처리가 필요함.
-            } else {
-                System.out.printf("Topic: %s, Partition: %d, Offset: %d, Key: %s, Received Message: %s\n", metadata.topic(), metadata.partition()
-                        , metadata.offset(), record.key(), record.value());
-            }
-        }
+  @Override
+  public void onCompletion(RecordMetadata metadata, Exception e) {
+    if (e != null) {
+      e.printStackTrace(); //카프카가 오류를 리턴하면 onCompletion()은 예외를 갖게 되며, 실제 운영환경에서는 추가적인 예외처리가 필요함.
+    } else {
+      System.out.printf("Topic: %s, Partition: %d, Offset: %d, Key: %s, Received Message: %s\n", metadata.topic(), metadata.partition()
+              , metadata.offset(), record.key(), record.value());
     }
+  }
 }
 ```
 * 콜백을 사용하기 위해서는 org.apache.kafka.clients.producer.Callback을 구현하는 클래스가 필요하다.
 * 카프카가 오류를 리턴하면 onCompletion()은 예외를 갖게 된다.
 
 ```java
+// Async
 public class Exam_3_4 {
     public static void main(String[] args) {
         Properties props = new Properties(); //Properties 오브젝트를 시작합니다.
@@ -201,3 +200,123 @@ public class Exam_3_4 {
 * 위 예제는 비동기 전송 예제다.
 * 프로듀서는 send() 메서드의 콜백을 함께 전달한다.
 * 비동기/콜백 전송 방법은 빠른 전송이 가능하고, 메시지 전송이 실패한 경우라도 예외를 처리할 수 있다.
+
+## 컨슈머의 기본 동작과 예제
+* 컨슈머는 내부적으로 컨슈머 그룹, 리밸런싱 등 여러 동작을 수행한다.
+* 프로듀서가 아무리 빠르게 카프카로 메시지를 전송하더라도 컨슈머가 카프카로부터 빠르게 메시지를 읽어오지 못하면 지연이 발생한다.
+
+### 컨슈머의 기본 동작
+* 퓨로듀서가 카프카의 토픽으로 메시지를 전송하면 해당 메시지들은 브로커들의 로컬 디스크에 저장된다.
+* 컨슈머는 토픽에 저장된 메시지를 가져온다.
+* 컨슈머 그룹은 하나 이상의 컨슈머들이 모여 있는 그룹을 의미하고, 컨슈머는 반드시 컨슈머 그룹에 속하게 된다.
+* 컨슈머 그룹은 각 파티션의 리더에게 카프카 토픽에 저장된 메시지를 가져오기 위해 요청을 보낸다.
+* 파티션 수와 컨슈머 수(하나의 컨슈머 그룹 안에 있는 컨슈머 수)는 일대일로 매핑되는 것이 이상적이다.
+  * 컨슈머 수가 파티션 수보다 많다고 해서 더 빠르게 토픽을 가져오거나 처리량이 늘어나지는 않는다.
+  * 파티션 수 이상의 컨슈머들은 대기 상태로 존재하게 된다.
+  * 컨슈머 그룹 내에서 리밸런싱 동작을 통해 장애가 발생한 컨슈머의 역할을 동일한 그룹에 있는 다른 컨슈머가 그 역할을 대신 수행하므로 장애를 대비한 추가 컨슈머 리소스를 구성할 필요는 없다.
+
+### 컨슈머 예제
+* 컨슈머에서 메시지를 가져오는 방법은 크게 세 가지 방식이 있다.
+  * 오토 커밋
+  * 동기 가져오기
+  * 비동기 가져오기
+
+```java
+// Auto Commit
+public class Exam_3_5 {
+  public static void main(String[] args) {
+    Properties props = new Properties(); //Properties 오브젝트를 시작.
+    props.put(BOOTSTRAP_SERVERS_CONFIG, "localhost:9092"); //브로커 리스트를 정의.
+    props.put(GROUP_ID_CONFIG, "peter-consumer01"); //컨슈머 그룹 아이디 정의.
+    props.put(ENABLE_AUTO_COMMIT_CONFIG, "true"); //오토 커밋을 사용.
+    props.put(AUTO_OFFSET_RESET_CONFIG, "latest"); //컨슈머 오프셋을 찾지 못하는 경우 latest로 초기화 합니다. 가장 최근부터 메시지를 가져옴.
+    props.put(KEY_DESERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.StringDeserializer"); //문자열을 사용했으므로 StringDeserializer 지정.
+    props.put(VALUE_DESERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.StringDeserializer");
+    KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props); //Properties 오브젝트를 전달하여 새 컨슈머를 생성.
+
+    try (consumer) {
+      consumer.subscribe(List.of("peter-basic-01")); //구독할 토픽을 지정.
+      while (true) { //무한 루프 시작. 메시지를 가져오기 위해 카프카에 지속적으로 poll()을 함.
+        ConsumerRecords<String, String> records = consumer.poll(Duration.ofSeconds(1L)); //컨슈머는 폴링하는 것을 계속 유지하며, 타임 아웃 주기를 설정.해당 시간만큼 블럭.
+        for (ConsumerRecord<String, String> record : records) { //poll()은 레코드 전체를 리턴하고, 하나의 메시지만 가져오는 것이 아니므로, 반복문 처리.
+          System.out.printf("Topic: %s, Partition: %s, Offset: %d, Key: %s, Value: %s\n",
+                  record.topic(), record.partition(), record.offset(), record.key(), record.value());
+        }
+      }
+    } catch (Exception e) {
+      e.printStackTrace();
+    }
+  }
+}
+```
+* 오토 커밋은 오프셋을 주기적으로 커밋하므로 관리자가 오프셋을 따로 관리하지 않아도 된다는 장점이 있다.
+* 컨슈머 종료 등이 빈번히 일어나면 일부 메시지를 못 가져오거나 중복으로 가져오는 경우가 있다.
+* 카프카가 안정적으로 잘 동작하고, 컨슈머 역시 한 번 구동하고 나면 자주 변경되거나 종료되는 현상이 없으므로 오토 커밋을 사용하는 경우가 많다.
+
+```java
+// Sync
+public class Exam_3_6 {
+    public static void main(String[] args) {
+        Properties props = new Properties(); //Properties 오브젝트를 시작.
+        props.put(BOOTSTRAP_SERVERS_CONFIG, "localhost:9092"); //브로커 리스트를 정의.
+        props.put(GROUP_ID_CONFIG, "peter-consumer01"); //컨슈머 그룹 아이디 정의.
+        props.put(ENABLE_AUTO_COMMIT_CONFIG, "false"); //오토 커밋을 사용하지 않음.
+        props.put(AUTO_OFFSET_RESET_CONFIG, "latest"); //컨슈머 오프셋을 찾지 못하는 경우 latest로 초기화 합니다. 가장 최근부터 메시지를 가져옴.
+        props.put(KEY_DESERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.StringDeserializer"); //문자열을 사용했으므로 StringDeserializer 지정.
+        props.put(VALUE_DESERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.StringDeserializer");
+        KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props); //Properties 오브젝트를 전달하여 새 컨슈머를 생성.
+
+        try (consumer) {
+            consumer.subscribe(List.of("peter-basic01")); //구독할 토픽을 지정.
+            while (true) { //무한 루프 시작. 메시지를 가져오기 위해 카프카에 지속적으로 poll()을 함.
+                ConsumerRecords<String, String> records = consumer.poll(Duration.ofSeconds(1L)); //컨슈머는 폴링하는 것을 계속 유지하며, 타임 아웃 주기를 설정.해당 시간만큼 블럭함.
+                for (ConsumerRecord<String, String> record : records) { //poll()은 레코드 전체를 리턴하고, 하나의 메시지만 가져오는 것이 아니므로, 반복문 처리함.
+                    System.out.printf("Topic: %s, Partition: %s, Offset: %d, Key: %s, Value: %s\n",
+                            record.topic(), record.partition(), record.offset(), record.key(), record.value());
+                }
+                consumer.commitSync(); //현재 배치를 통해 읽은 모든 메시지들을 처리한 후, 추가 메시지를 폴링하기 전 현재의 오프셋을 동기 커밋.
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+}
+```
+* 컨슈머의 commitSync() 메서드는 배치를 통해 읽은 모든 메시지를 처리한 후, 추가 메시지를 폴링하기 전 현재의 오프셋을 동기 커밋한다.
+* 동기 방식은 속도는 느리지만 메시지 손실은 거의 발생하지 않는다.
+* 메시지의 중복 이슈는 피할 수 없다.
+
+```java
+// Async
+public class Exam_3_7 {
+    public static void main(String[] args) {
+        Properties props = new Properties(); //Properties 오브젝트를 시작.
+        props.put(BOOTSTRAP_SERVERS_CONFIG, "localhost:9092"); //브로커 리스트를 정의.
+        props.put(GROUP_ID_CONFIG, "peter-consumer01"); //컨슈머 그룹 아이디 정의.
+        props.put(ENABLE_AUTO_COMMIT_CONFIG, "false"); //오토 커밋을 사용하지 않음.
+        props.put(AUTO_OFFSET_RESET_CONFIG, "latest"); //컨슈머 오프셋을 찾지 못하는 경우 latest로 초기화. 가장 최근부터 메시지를 가져옴.
+        props.put(KEY_DESERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.StringDeserializer"); //문자열을 사용했으므로 StringDeserializer 지정.
+        props.put(VALUE_DESERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.StringDeserializer");
+        KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props); //Properties 오브젝트를 전달하여 새 컨슈머를 생성.
+
+        try (consumer) {
+            consumer.subscribe(List.of("peter-basic-01")); //구독할 토픽을 지정.
+            while (true) { //무한 루프 시작. 메시지를 가져오기 위해 카프카에 지속적으로 poll()을 함.
+                ConsumerRecords<String, String> records = consumer.poll(1000); //컨슈머는 폴링하는 것을 계속 유지하며, 타임 아웃 주기를 설정.해당 시간만큼 블럭함.
+                for (ConsumerRecord<String, String> record : records) { //poll()은 레코드 전체를 리턴하고, 하나의 메시지만 가져오는 것이 아니므로, 반복문 처리.
+                    System.out.printf("Topic: %s, Partition: %s, Offset: %d, Key: %s, Value: %s\n",
+                            record.topic(), record.partition(), record.offset(), record.key(), record.value());
+                }
+                consumer.commitAsync(); //현재 배치를 통해 읽은 모든 메시지들을 처리한 후, 추가 메시지를 폴링하기 전 현재의 오프셋을 비동기 커밋합니다.
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+}
+```
+* commitAsync() 메서드는 commitSync()와 달리 오프셋 커밋을 실패하더라도 재시도하지 않는다.
+* 비동기 커밋이 계속 실패하더라도 마지막의 비동기 커밋만 성공한다면 안정적으로 오프셋을 커밋하게 된다.
+
+### 컨슈머 그룹의 이해
+* 컨슈머들은 하나의 컨슈머 그룹 안에 속해 있으며, 그룹 내의 컨슈머들은 서로의 정보를 공유한다.
