@@ -92,3 +92,72 @@
   * 프로듀서가 트랜잭션 관련 정보를 트랜잭션 코디네이터에게 알리고, 모든 정보의 로그는 트랜잭션 코디네이터가 직접 기록한다.
 * 정확히 한 번 전송을 이용해 전송된 메시지들이 카프카에 저장되면, 카프카의 메시지를 다루는 클라이언트들은 해당 메시지들이 정상적으로 커밋된 것인지 또는 실패한 것이지 식별하기 위해 컨트롤 메시지라고 불리는 특별한 타입의 메시지를 추가로 사용한다.
 * 컨트롤 메시지는 페이로드에 애플리케이션 데이터를 포함하지 않으며, 브로커와 클라이언트 통신에서만 사용된다.
+
+### 프로듀서 예제 코드
+```java
+public class ExactlyOnceProducer {
+    public static void main(String[] args) {
+        String bootstrapServers = "peter-kafka01.foo.bar:9092";
+        Properties props = new Properties();
+        props.setProperty(BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+        props.setProperty(KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        props.setProperty(VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        props.setProperty(ENABLE_IDEMPOTENCE_CONFIG, "true"); // 정확히 한번 전송을 위한 설정
+        props.setProperty(ACKS_CONFIG, "all"); // 정확히 한번 전송을 위한 설정
+        props.setProperty(MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, "5"); // 정확히 한번 전송을 위한 설정
+        props.setProperty(RETRIES_CONFIG, "5"); // 정확히 한번 전송을 위한 설정
+        props.setProperty(TRANSACTIONAL_ID_CONFIG, "peter-transaction-01"); // 정확히 한번 전송을 위한 설정 (프로듀서 프로세스마다 고유한 아이디로 설정해야 한다.)
+
+        Producer<String, String> producer = new KafkaProducer<>(props);
+
+        producer.initTransactions(); // 프로듀서 트랜잭션 초기화
+        producer.beginTransaction(); // 프로듀서 트랜잭션 시작
+        try {
+            for (int i = 0; i < 1; i++) {
+                ProducerRecord<String, String> record = new ProducerRecord<>("peter-test05", "Apache Kafka is a distributed streaming platform - " + i);
+                producer.send(record);
+                producer.flush();
+                System.out.println("Message sent successfully");
+            }
+        } catch (Exception e){
+            producer.abortTransaction(); // 프로듀서 트랜잭션 중단
+            e.printStackTrace();
+        } finally {
+            producer.commitTransaction(); // 프로듀서 트랜잭션 커밋
+            producer.close();
+        }
+    }
+}
+```
+* 위 설정에서 TRANSACTION_ID_CONFIG는 프로듀서 프로세스 별로 고유해야 한다.
+
+### 단계별 동작
+![트랜잭션 코디네이터 찾기](find-coordinator-request.png)
+* 정확히 한 번 전송을 위해 프로듀서는 FindCoordinatorRequest 요청을 통해 트랜잭션 코디네이터 위치를 찾는다.
+  * 트랜잭션 코디네이터는 브로커에 위치해 있다.
+  * 트랜잭션 코디네이터의 주 역할은 PID와 transactional.id를 매핑하고 해당 트랜잭션 전체를 관리하는 것이다.
+  * 만약 트랜잭션 코디네이터가 존재하지 않는다면 신규 트랜잭션 코디네이터가 생성된다.
+* _transaction_state 토픽의 파티션 번호는 transactional.id를 기반으로 해시하여 결정하고, 이 파티션의 리더가 있는 브로커가 트랜잭션 코디네이터로 선정된다. (transaction.id가 정확히 하나의 코디네이터만 갖고 있다.) 
+
+![프로듀서 초기화](init-pid-request.png)
+* 프로듀서는 initTransactions() 메서드를 이용해 트랜잭션 전송을 위한 InitPidRequest를 트랜잭션 코디네이터로 보낸다.
+* TID(transaction.id)가 설정된 경우에는 InitPidRequest와 함께 TID가 트랜잭션 코디네이터에게 전송된다.
+* 트랜잭션 코디네이터는 TID, PID를 매핑하고 해당 정보를 트랜잭션 로그에 기록한다.
+* 트랜잭션 로그를 기록한 후에 PID 에포크(epoch)를 한 단계 올리고, 이후부터는 동일한 PID와 이전 에포크에 대한 쓰기 요청은 무시된다.
+
+![프로듀서 트랜잭션 시작](begin-transaction.png)
+* 프로듀서는 beginTransaction() 메서드를 이용해 새로운 트랜잭션 시작을 알린다.
+  * 프로듀서는 내부적으로만 트랜잭션이 시작됐음을 기록하고, 트랜잭션 코디네이터 관점에서는 첫 번째 레코드가 전송될 때까지 트랜잭션이 시작된 것은 아니다.
+* 프로듀서는 토픽 파티션 정보를 트랜잭션 코디네이터에게 전달하고, 트랜잭션 코디네이터는 해당 정보를 트랜잭션 로그에 기록한다. 트랜잭션의 현재 상태는 Ongoing으로 표시한다.
+* 트랜잭션 코디네이터는 해당 트랜잭션에 대해 기본값인 1분 동안 트랜잭션 상태 업데이트가 없다면 해당 트랜잭션은 실패로 처리한다.
+* 프로듀서는 대상 토픽의 파티션으로 메시지를 전송하고, 해당 메시지에는 PID, 에포크, 시퀀스 번호가 함께 포함되어 있다.
+* 메시지 전송을 완료한 프로듀서는 commitTransaction() 메서드 또는 abortTransaction() 메서드를 호출하여, 트랜잭션이 완료됨을 트랜잭션 코디네이터에게 알린다.
+* 트랜잭션 코디네이터는 두 단계의 커밋 과정을 거친다.
+  * 첫 번째는 트랜잭션 로그에 해당 트랜잭션에 대한 PrepareCommit 또는 PrepareAbort를 기록한다.
+  * 두 번재는 트랜잭션 로그에 기록된 토픽의 파티션에 트랜잭션 커밋 표시를 기록한다.
+* 트랜잭션 코디네이터는 메시지를 받았던 파티션에 트랜잭션 커밋 표시 메시지를 기록하고, 이 추가 메시지로 인해 해당 파티션의 오프셋이 1 증가하게 된다.
+  * 트랜잭션 커밋 표시 메시지는 컨트롤 메시지라고 하며, 해당 PID의 메시지가 제대로 전송됐는지 여부를 컨슈머에게 나타내는 용도로도 사용된다.
+  * 트랜잭션이 커밋이 끝나지 않은 메시지는 컨슈머에게 반환하지 않는다.
+  * 오프셋의 순서 보장을 위해 트랜잭션 성공 또는 실패를 나타내는 LSO(last stable offest)라는 오프셋을 유지하게 된다.
+* 마지막으로 트랜잭션 코디네이터는 트랜잭션을 Committed라고 트랜잭션 로그에 기록하여 트랜잭션을 완료한다. 그리고 프로듀서에게 해당 트랜잭션이 완료됨을 알린다.
+* 트랜잭션을 이용하는 컨슈머는 read_committed설정을 하면 트랜잭션에 성공한 메시지들만 읽을 수 있다.
