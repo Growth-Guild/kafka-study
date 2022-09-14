@@ -5,9 +5,11 @@
   * replication factor (복제본 생성 수) 옵션을 통해서 각 토픽의 리플리케이션 갯수를 지정할 수 있다.
   * kafka-topics.sh 의 --describe 옵션을 통해서 아래와 같이
   파티션의 개수, 리플리케이션 팩터 수, 리플리케이션이 존재하는 브로커등의 상세 정보를 확인할 수 있다
+  
     ![describe](./picture/peter-test01-describe.PNG)
   * kafka-dump-log.sh --print-data-log --files ${세그먼트 파일} 을 통해 세그먼트의 시작 오프셋, 메시지 등의 상세 정보를
   아래와 같이 확인할 수 있다.
+  
     ![dump](./picture/peter-dump.PNG)
   * N 개의 리플리케이션이 있을 경우, N-1 까지의 브로커 장애시에도 메시지 손실없이 안정적으로 메시지를 주고받을 수 있다
 
