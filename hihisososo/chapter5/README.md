@@ -48,5 +48,101 @@
   프로듀서에서 재전송하는 PID 와 시퀀스 값을 비교하여 이미 저장된 메시지면 저장하지 않고 ACK 응답만을 보낸다
   * 해당 전송 방식에는 PID, 시퀀스를 확인하므로 오버헤드가 있다, 하지만 생각보다 높은 편은 아니다(-20%)
 
-
+* 정확히 한 번 전송
+  * 카프카에서 정확히 한 번 전송은, 트랜잭션과 같은 전체적인 프로듀서 프로세스를 의미함
+  * 트랜잭션 내에서 프로듀서 메시지 전송 방식은 어느 걸로 채택해도 됨(하위 개념)
+  * 카프카 내에 트랜잭션을 관리하는 프로세스가 따로 존재하며 이를 트랜잭션 API 라 칭함
+  > 트랜잭션 : 논리적인 연속된 작업 단위, 하나라도 실패하는 경우 해당 작업 단위가 실패 처리됨
+  * 프로듀서의 트랜잭션을 지원하기 위해 서버 내부적으로 트랜잭션 코디네이터가 존재하며, 트랜잭션
+  로그를 _transaction_state 토픽에 저장한다
+  * _transaction_state 토픽은 트랜잭션 코디네이터가 알아서 담당하여 트랜잭션 내역을 기록한다
+  * 트랜잭션이 커밋되기 전에 메시지는 브로커에 계속 쌓이고 있는데, 트랜잭션이 커밋되었는지 어떻게 판단할까? 
+  이를 식별하기 위해 컨트롤 메시지라는 개념이 사용된다
+  * 정확히 한번 전송(트랜잭션) 예제 코드는 아래와 같다
+    ```java
   
+        import org.apache.kafka.clients.producer.*;
+        import org.apache.kafka.common.serialization.StringSerializer;
+      
+        import java.util.Properties;
+      
+        public class ExactlyOnceProducer {
+        public static void main(String[] args) {
+        String bootstrapServers = "peter-kafka01.foo.bar:9092";
+        Properties props = new Properties();
+        props.setProperty(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+        props.setProperty(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        props.setProperty(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        props.setProperty(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, "true"); // 정확히 한번 전송을 위한 설정
+        props.setProperty(ProducerConfig.ACKS_CONFIG, "all"); // 정확히 한번 전송을 위한 설정
+        props.setProperty(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, "5"); // 정확히 한번 전송을 위한 설정
+        props.setProperty(ProducerConfig.RETRIES_CONFIG, "5"); // 정확히 한번 전송을 위한 설정
+        props.setProperty(ProducerConfig.TRANSACTIONAL_ID_CONFIG, "peter-transaction-01"); // 정확히 한번 전송을 위한 설정
+      
+                Producer<String, String> producer = new KafkaProducer<>(props);
+      
+                producer.initTransactions(); // 프로듀서 트랜잭션 초기화
+                producer.beginTransaction(); // 프로듀서 트랜잭션 시작
+                try {
+                    for (int i = 0; i < 1; i++) {
+                        ProducerRecord<String, String> record = new ProducerRecord<>("peter-test05", "Apache Kafka is a distributed streaming platform - " + i);
+                        producer.send(record);
+                        producer.flush();
+                        System.out.println("Message sent successfully");
+                    }
+                } catch (Exception e){
+                    producer.abortTransaction(); // 프로듀서 트랜잭션 중단
+                    e.printStackTrace();
+                } finally {
+                    producer.commitTransaction(); // 프로듀서 트랜잭션 커밋
+                    producer.close();
+                }
+            }
+        }
+    
+      ```
+* 정확히 한 번 전송 단계별 동작
+  1. 트랜잭션 코디네이터 찾기
+    * 프로듀서에서 FindCoordinatorRequest 메시지를 보내서, 트랜잭션 코디네이터를 생성하거나 어느 브로커에 있는지 찾는다
+    * _transaction_state(트랜잭션 상태 기록 토픽) 은 프로듀서에서 보낸 TRANSACTIONAL_ID 를 기반으로 해시하여 파티션을 정하며, 
+    이 파티션의 리더 브로커에 코디네이터가 존재하게 된다
+    ![transaction_1](./picture/transaction_1.PNG)     
+  2. 프로듀서 초기화
+    * 프로듀서에서 initTransactions() 메서드를 통해 InitPidRequest 를 브로커로 보낸다.
+      (코디네이터 찾는 부분은 그럼 프로듀서 생성시?)
+    * 요청을 받은 트랜잭션 코디네이터에서는 PID(프로듀서 아이디) 와 TID(트랜잭션의 아이디)를 매핑해서 해당 정보를 트랜잭션 로그에 기록한다
+    * PID 에포크를 올리며, 해당 에포크 이전의 PID 와 이전 에포크에 대한 쓰기 요청은 무시된다(리더에포크와 유사함)
+    ![transaction_2](./picture/transaction_2.PNG)
+     
+  3. 트랜잭션 시작
+    * 프로듀서의 beginTransaction() 메서드를 통해 프로듀서 내부에서 트랜잭션이 시작됨을 알림
+    * 트랜잭션 코디네이터에는 영향 없음
+    ![transaction_3](./picture/transaction_3.PNG)
+  
+  4. 트랜잭션 상태 추가
+    * 프로듀서는 토픽의 파티션 정보를 트랜잭션 코디네이터에게 전달(파티션 0)
+    * 코디네이터는 해당 정보를 OnGoing 상태로 로그에 기록
+    * 첫번째 기록되는 파티션이라면, 타이머를 설정해서 해당시간(기본 1분)동안 상태 업데이트가 없다면 트랜잭션 실패
+    ![transaction_4](./picture/transaction_4.PNG)
+  5. 메시지 전송
+    * 프로듀서는 이제 대상 토픽의 파티션으로 메시지를 전송한다
+    * 해당 메시지에는 PID, 에포크, 시퀀스 번호가 포함되어 있다
+    * 코디네이터와 메시지를 전송받는 브로커 서버는 서로 다르다 (서버가 한개일 때는 한 서버에서 동작?)
+    ![transaction_5](./picture/transaction_5.PNG)
+  6. 트랜잭션 종료 요청
+     * 메시지 전송을 완료한 프로듀서는 abortTransaction() or commitTransaction() 를 무조건 호출해야 한다
+     * 위의 메서드 호출을 통해 트랜잭션이 종료되었음을 코디네이터에게 알린다
+     * 이에 코디네이터는 첫 커밋 과정을 수행하게 되며 abortTransaction() -> PrepareAbort, commitTransaction() -> PrepareCommit
+     을 트랜잭션 로그에 기록한다
+     ![transaction_6](./picture/transaction_6.PNG)
+  7. 사용자 토픽에 표시 요청
+     * 코디네이터는 두번째 커밋 과정을 수행하게 된다, 이 과정은 토픽 파티션에 트랜잭션 커밋 메시지(컨트롤 메시지)를 기록하는 것이다
+     * 따라서 메시지를 하나만 보냈더라도, 오프셋은 컨트롤 메시지까지 2개가 된다
+     * 트랜잭션이 끝나지 않는 메시지는 오프셋의 순서 보장을 위해 트랜잭션 성공 또는 실패를 나타내는 LSO 오프셋을 유지한다
+     * 트랜잭션이 끝나지 않은 메시지는 컨슈머에게 전송되지 않는다. 
+     ![transaction_7](./picture/transaction_7.PNG)
+  
+  8. 트랜잭션 완료
+    * 트랜잭션 코디네이터는 committed 라고 트랜잭션 로그에 기록한다. 또한 프로듀서에게 트랜잭션이 끝났음을 알린다
+    * 트랜잭션을 이용하는 컨슈머는 read_committed 설정을 하면 트랜잭션에 성공한 메시지들만 읽을 수 있게 된다
+    ![transaction_8](./picture/transaction_8.PNG)
